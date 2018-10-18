@@ -79,9 +79,9 @@ Gem::Specification.new do |spec|
   spec.authors       = ["Angelos Alexopoulos"]
   spec.summary       = %[Embulk Output Domo output plugin for Embulk]
   spec.description   = %[Dumps records to Embulk Output Domo.]
-  spec.email         = ["angelosalexopoulos@cloud.upwork.com"]
+  spec.email         = ["alexopoulos7@gmail.com"]
   spec.licenses      = ["MIT"]
-  spec.homepage      = "https://github.com/angelosalexopoulos/embulk-output-embulk_output_domo"
+  spec.homepage      = "https://github.com/alexopoulos7/embulk-output-embulk_output_domo"
 
   spec.files         = `git ls-files`.split("\n") + Dir["classpath/*.jar"]
   spec.test_files    = spec.files.grep(%r"^(test|spec)/")
