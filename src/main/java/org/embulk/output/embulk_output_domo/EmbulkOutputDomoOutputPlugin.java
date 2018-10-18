@@ -66,6 +66,7 @@ public class EmbulkOutputDomoOutputPlugin
     private static ArrayList<String> recordsParts = new ArrayList<String>();
     private int currentPartCounter = 1;
     private static int totalBatches = 1;
+    private static int pageReaderCount = 0;
 
     public enum QuotePolicy
     {
@@ -85,7 +86,6 @@ public class EmbulkOutputDomoOutputPlugin
             return string;
         }
     }
-
 
     public interface TimestampColumnOption
             extends Task, TimestampFormatter.TimestampColumnOption
@@ -184,7 +184,6 @@ public class EmbulkOutputDomoOutputPlugin
         }
     }
 
-
     @Override
     public ConfigDiff transaction(ConfigSource config,
                                   Schema schema, int taskCount,
@@ -250,65 +249,13 @@ public class EmbulkOutputDomoOutputPlugin
         List<List<StringBuilder>> batchLists = batches(allRecords, totalBatches);
         int i=1;
         for(List<StringBuilder> l : batchLists){
-            logger.info("Uploading..."+i +" with records = "+l.size() );
             sdsClient.uploadDataPart(sds.getId(), execution.getId(), i, stringifyList(l));
-
             i++;
         }
         logger.info("Finished Uploading");
-        //sdsClient.uploadDataPart(sds.getId(), execution.getId(), 1, stringify(allRecords));
         //Commit Execution
         Execution committedExecution = sdsClient.commitExecution(sds.getId(), execution.getId());
         logger.info("Committed Execution: " + committedExecution);
-    }
-
-    private String stringifyList(List<StringBuilder> records){
-        StringBuilder sb = new StringBuilder();
-        for (StringBuilder s : records)
-        {
-            if(s!=null) {
-                sb.append(s);
-                sb.append("\n");
-            }
-            else{
-                logger.info("NULL Found!");
-            }
-        }
-        return sb.toString();
-    }
-
-    private String stringify(ArrayList<StringBuilder> records) {
-        StringBuilder sb = new StringBuilder();
-        for (StringBuilder s : records)
-        {
-            sb.append(s);
-            sb.append("\n");
-        }
-        return sb.toString();
-    }
-
-
-    public static <T> List<List<T>> batches(List<T> input, int chunkSize) {
-
-        int inputSize = input.size();
-        int chunkCount = (int) Math.ceil(inputSize / (double) chunkSize);
-        logger.info("chunkCount = "+chunkCount);
-
-        Map<Integer, List<T>> map = new HashMap<>(chunkCount);
-        List<List<T>> chunks = new ArrayList<>(chunkCount);
-
-        for (int i = 0; i < inputSize; i++) {
-
-            map.computeIfAbsent(i / chunkSize, (ignore) -> {
-
-                List<T> chunk = new ArrayList<>();
-                chunks.add(chunk);
-                return chunk;
-
-            }).add(input.get(i));
-        }
-
-        return chunks;
     }
 
     @Override
@@ -329,7 +276,7 @@ public class EmbulkOutputDomoOutputPlugin
         private PluginTask task;
 
         private Schema schema;
-
+        ArrayList<StringBuilder> recordsPage = new ArrayList<StringBuilder>();
 
         public DomoPageOutput(final PageReader pageReader,
                                     DomoClient client, PluginTask task, Schema schema)
@@ -346,7 +293,7 @@ public class EmbulkOutputDomoOutputPlugin
         {
             try {
                 pageReader.setPage(page);
-                //logger.info("NEW PAGE ADD!! " + page);
+
                 final char delimiter = ',';
                 final String delimiterString = ",";
                 final String nullString = "";
@@ -354,7 +301,6 @@ public class EmbulkOutputDomoOutputPlugin
                 final char quote = this.task.getQuoteChar() != '\0' ? this.task.getQuoteChar() : '"';
                 final char escape = this.task.getEscapeChar().or(quotePolicy == QuotePolicy.NONE ? '\\' : quote);
                 final String newlineInField = this.task.getNewlineInField().getString();
-                //ArrayList<StringBuilder> records = new ArrayList<StringBuilder>();
 
                 while (pageReader.nextRecord()) {
                     StringBuilder lineBuilder = new StringBuilder();
@@ -434,13 +380,10 @@ public class EmbulkOutputDomoOutputPlugin
                         }
 
                     });
-                    //records.add(lineBuilder);
-                    allRecords.add(lineBuilder);
-                    //logger.info("Records size = "+ records.size());
+
+                    recordsPage.add(lineBuilder);
                     totalRecords++;
                 }
-                logger.info(" records = " + totalRecords);
-
 
 
             }
@@ -452,12 +395,12 @@ public class EmbulkOutputDomoOutputPlugin
         @Override
         public void finish()
         {
-
         }
 
         @Override
         public void close()
         {
+            allRecords.addAll(recordsPage);
         }
 
         @Override
@@ -471,19 +414,6 @@ public class EmbulkOutputDomoOutputPlugin
             return Exec.newTaskReport();
         }
 
-    private String stringify(ArrayList<StringBuilder> records) {
-        StringBuilder sb = new StringBuilder();
-        for (StringBuilder s : records)
-        {
-            sb.append(s);
-            //logger.info("Appending {}"+s.toString());
-            sb.append("\n");
-        }
-        return sb.toString();
-    }
-
-    private void executeDomoUpload(int partNum, String csvInput, StreamClient sdsClient, Stream sds, Execution execution) {
-        sdsClient.uploadDataPart(sds.getId(), execution.getId(), partNum, csvInput);
     }
 
     private String setEscapeAndQuoteValue(String v, char delimiter, QuotePolicy policy, char quote, char escape, String newline, String nullString)
@@ -538,5 +468,50 @@ public class EmbulkOutputDomoOutputPlugin
 
         return String.valueOf(quote) + v + quote;
     }
+
+    private String stringifyList(List<StringBuilder> records){
+        StringBuilder sb = new StringBuilder();
+        for (StringBuilder s : records)
+        {
+            if(s!=null) {
+                sb.append(s);
+                sb.append("\n");
+            }
+            else{
+                logger.info("NULL Found!");
+            }
+        }
+        return sb.toString();
+    }
+
+    private String stringify(ArrayList<StringBuilder> records) {
+        StringBuilder sb = new StringBuilder();
+        for (StringBuilder s : records)
+        {
+            sb.append(s);
+            sb.append("\n");
+        }
+        return sb.toString();
+    }
+    public static <T> List<List<T>> batches(List<T> input, int chunkSize) {
+
+        int inputSize = input.size();
+        int chunkCount = (int) Math.ceil(inputSize / (double) chunkSize);
+
+        Map<Integer, List<T>> map = new HashMap<>(chunkCount);
+        List<List<T>> chunks = new ArrayList<>(chunkCount);
+
+        for (int i = 0; i < inputSize; i++) {
+
+            map.computeIfAbsent(i / chunkSize, (ignore) -> {
+
+                List<T> chunk = new ArrayList<>();
+                chunks.add(chunk);
+                return chunk;
+
+            }).add(input.get(i));
+        }
+
+        return chunks;
     }
 }

@@ -9,6 +9,12 @@ Using the [domo jdk](https://github.com/domoinc/domo-java-sdk) we can move data 
 * **Resume supported**: no
 * **Cleanup supported**: yes
 
+
+## Install
+```
+embulk gem install embulk-output-embulk_output_domo 
+```
+
 ## Configuration
 
 - **clientId**: description (string, required)
