@@ -150,7 +150,7 @@ public class EmbulkOutputDomoOutputPlugin
         for (int i = 0; i < schema.size(); i++) {
             Column column = schema.getColumn(i);
             Type type = column.getType();
-            logger.info("{\n" +
+            System.out.println("{\n" +
                     "      \"type\" : \""+type.getName().toUpperCase()+"\",\n" +
                     "      \"name\" : \""+column.getName() +"\"\n" +
                     "    },");
