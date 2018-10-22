@@ -90,6 +90,7 @@ public class EmbulkOutputDomoOutputPlugin
     private static int totalBatches = 1;
     private static int pageReaderCount = 0;
     private static String TEMP_DIR = "/tmp/csv/" +RandomStringUtils.randomAlphabetic(10)+"/";
+    public static int totalRecordsCounter = 0;
 
     public enum QuotePolicy
     {
@@ -283,7 +284,7 @@ public class EmbulkOutputDomoOutputPlugin
                 Runnable partUpload = () -> streamClient.uploadDataPart(sds.getId(), execution.getId(), myPartNum, compressedCsvFile);
                 uploadTasks.add(Executors.callable(partUpload));
                 partNum++;
-            }
+             }
             // Asynchronously execute all uploading tasks
             try {
                 executorService.invokeAll(uploadTasks);
@@ -345,7 +346,7 @@ public class EmbulkOutputDomoOutputPlugin
             this.task = task;
             this.schema = schema;
             this.partPageNum = partNum++;
-            this.recordsPage = new ArrayList<StringBuilder>();
+
             try {
                 File directory = new File(TEMP_DIR);
                 if (!directory.exists()) {
@@ -369,10 +370,10 @@ public class EmbulkOutputDomoOutputPlugin
         public void add(Page page)
         {
             final StringBuilder pageBuilder = new StringBuilder();
+            //logger.info("New page");
+            this.recordsPage = new ArrayList<StringBuilder>();
             try {
                 pageReader.setPage(page);
-                logger.info("NEW PAGE!!");
-
                 while (pageReader.nextRecord()) {
                     StringBuilder lineBuilder = new StringBuilder();
                     pageReader.getSchema().visitColumns(new ColumnVisitor() {
@@ -452,6 +453,14 @@ public class EmbulkOutputDomoOutputPlugin
                     });
                     recordsPage.add(lineBuilder);
                 }
+                try {
+                    //save as csv
+                    WriteToFile(stringify(recordsPage), RandomStringUtils.randomNumeric(10)+RandomStringUtils.randomAlphabetic(20).toString()+".csv");
+                }
+                catch (IOException e){
+                    logger.error("Exception on closing page!");
+                    logger.error(e.getMessage());
+                }
             }
             catch (Exception ex) {
                 throw new RuntimeException(ex);
@@ -466,15 +475,6 @@ public class EmbulkOutputDomoOutputPlugin
         @Override
         public void close()
         {
-            try {
-                //save as csv
-                WriteToFile(stringify(recordsPage), RandomStringUtils.randomAlphabetic(10).toString()+".csv");
-            }
-            catch (IOException e){
-                logger.error("Exception on closing page!");
-                logger.error(e.getMessage());
-            }
-
         }
 
         @Override
@@ -592,25 +592,42 @@ public class EmbulkOutputDomoOutputPlugin
     }
     public static List<File> toGzipFilesUTF8( List<File> sourceFiles, String path){
         List<File> files = new ArrayList<>();
+        int batchMaxCount = 1000;
+        int currentCount = 0;
+        int remaining = sourceFiles.size();
+        ArrayList<File> batchFiles = new ArrayList<File>();
+        //System.out.println("All source files are "+remaining);
         for (File sourceFile : sourceFiles) {
-            String zipFileName = sourceFile.getName().replace(".csv", ".zip");
-            files.add(toGzipFileUTF8(sourceFile, path + zipFileName));
+            currentCount++;
+            batchFiles.add(sourceFile);
+            if(currentCount>=batchMaxCount || currentCount>=remaining){
+                remaining=remaining-batchMaxCount;
+                String zipFileName = sourceFile.getName().replace(".csv", ".zip");
+                files.add(toGzipFileUTF8(batchFiles, path + zipFileName));
+                // System.out.println("Add file "+sourceFile.getName()+"to zip file name = "+zipFileName+". Current count = "+currentCount +" Total records counter = "+totalRecordsCounter);
+                batchFiles.clear();
+                currentCount = 0;
+            }
+            //System.out.println("Add file "+sourceFile.getName()+ ". Current count = "+currentCount);
+
         }
         return files;
     }
-    public static File toGzipFileUTF8( File csvFile, String zipFilePath){
+    public static File toGzipFileUTF8(ArrayList<File> csvFiles, String zipFilePath){
         File outputFile = new File(zipFilePath);
         try {
             GZIPOutputStream gzos = new GZIPOutputStream(new FileOutputStream(outputFile));
-            BufferedReader reader = new BufferedReader(new FileReader(csvFile));
+            for (File csvFile : csvFiles){
+                BufferedReader reader = new BufferedReader(new FileReader(csvFile));
 
-            String currentLine;
-            while ((currentLine = reader.readLine()) != null){
-                currentLine += System.lineSeparator();
-                // Specifying UTF-8 encoding is critical; getBytes() uses ISO-8859-1 by default
-                gzos.write(currentLine.getBytes("UTF-8"));
+                String currentLine;
+                while ((currentLine = reader.readLine()) != null){
+                    currentLine += System.lineSeparator();
+                    totalRecordsCounter++;
+                    // Specifying UTF-8 encoding is critical; getBytes() uses ISO-8859-1 by default
+                    gzos.write(currentLine.getBytes("UTF-8"));
+                }
             }
-
             gzos.flush();
             gzos.finish();
             gzos.close();
@@ -623,6 +640,7 @@ public class EmbulkOutputDomoOutputPlugin
         return outputFile;
     }
     public static void WriteToFile(String fileContent, String fileName) throws IOException {
+        //logger.info("writing csv file to "+fileName);
 
         String tempFile = TEMP_DIR + fileName;
         File file = new File(tempFile);
@@ -641,6 +659,7 @@ public class EmbulkOutputDomoOutputPlugin
         bw.write(fileContent);
         bw.close();
     }
+
     public static ArrayList<File> loadCSVFiles (String searchFolder) {
         File folder = new File(searchFolder);
         File[] listOfFiles = folder.listFiles();
@@ -652,7 +671,7 @@ public class EmbulkOutputDomoOutputPlugin
                 }
             }
 
-        System.out.println("All csv files are "+ csvFiles);
+        //System.out.println("All csv files are "+ csvFiles);
         return csvFiles;
     }
 }
