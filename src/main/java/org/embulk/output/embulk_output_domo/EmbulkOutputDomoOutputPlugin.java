@@ -1,3 +1,7 @@
+/**
+ * Embulk output plugin that can move really big input to domo stream
+ * We are going to use algorithm for uploading in parallel found in https://developer.domo.com/docs/stream/upload-in-parallel
+ */
 package org.embulk.output.embulk_output_domo;
 
 import java.lang.StringBuilder;
@@ -49,6 +53,24 @@ import java.util.HashMap;
 import java.util.ArrayList;
 import java.util.Date;
 import java.text.SimpleDateFormat;
+import java.io.File;
+import java.io.FileWriter;
+import java.io.FileReader;
+import java.io.BufferedWriter;
+import java.io.BufferedReader;
+import java.io.FileOutputStream;
+
+import java.nio.file.Files;
+import java.nio.file.Paths;
+import java.util.concurrent.Callable;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
+import java.util.zip.GZIPOutputStream;
+import java.util.Collections;
+import org.apache.commons.lang3.RandomStringUtils;
+import org.apache.commons.io.FileUtils;
 
 
 public class EmbulkOutputDomoOutputPlugin
@@ -56,7 +78,7 @@ public class EmbulkOutputDomoOutputPlugin
 {
     private static DomoClient client = null;
     private static Execution execution = null;
-    private static StreamClient sdsClient = null;
+    private static StreamClient streamClient = null;
     private static Stream sds = null;
     private static TimestampFormatter[] timestampFormatters = null;
     private int partNum = 1;
@@ -67,6 +89,7 @@ public class EmbulkOutputDomoOutputPlugin
     private int currentPartCounter = 1;
     private static int totalBatches = 1;
     private static int pageReaderCount = 0;
+    private static String TEMP_DIR = "/tmp/csv/" +RandomStringUtils.randomAlphabetic(10)+"/";
 
     public enum QuotePolicy
     {
@@ -86,12 +109,10 @@ public class EmbulkOutputDomoOutputPlugin
             return string;
         }
     }
-
     public interface TimestampColumnOption
             extends Task, TimestampFormatter.TimestampColumnOption
     {
     }
-
     public interface PluginTask
             extends Task, TimestampFormatter.Task
     {
@@ -140,7 +161,6 @@ public class EmbulkOutputDomoOutputPlugin
         @ConfigDefault("\"LF\"")
         Newline getNewlineInField();
     }
-
     public com.domo.sdk.datasets.model.Schema getDomoSchema(Schema schema){
         /**
          * We need to return domo Schema
@@ -211,16 +231,20 @@ public class EmbulkOutputDomoOutputPlugin
                         .build();
 
                 client = DomoClient.create(domoConfig);
-                sdsClient = client.streamClient();
+                streamClient = client.streamClient();
 
-                List<Stream> searchedSds = sdsClient.search("dataSource.name:" + task.getStreamName());
+                List<Stream> searchedSds = streamClient.search("dataSource.name:" + task.getStreamName());
                 sds = searchedSds.get(0);
                 logger.info("Stream "+ sds);
-                execution = sdsClient.createExecution(sds.getId());
+                execution = streamClient.createExecution(sds.getId());
                 logger.info("Created Execution: " + execution);
                 timestampFormatters = Timestamps.newTimestampColumnFormatters(task, schema, task.getColumnOptions());
                 totalBatches = task.getBatchSize();
+                File directory = new File(TEMP_DIR);
+                if(!directory.exists()) {
 
+                    directory.mkdirs();
+                }
             }
         }
         catch(Exception ex){
@@ -232,32 +256,59 @@ public class EmbulkOutputDomoOutputPlugin
         control.run(task.dump());
         return Exec.newConfigDiff();
     }
-
     @Override
     public ConfigDiff resume(TaskSource taskSource,
-            Schema schema, int taskCount,
-            OutputPlugin.Control control)
+                             Schema schema, int taskCount,
+                             OutputPlugin.Control control)
     {
         throw new UnsupportedOperationException("embulk_output_domo output plugin does not support resuming");
     }
-
     @Override
     public void cleanup(TaskSource taskSource,
-            Schema schema, int taskCount,
-            List<TaskReport> successTaskReports)
+                        Schema schema, int taskCount,
+                        List<TaskReport> successTaskReports)
     {
-        List<List<StringBuilder>> batchLists = batches(allRecords, totalBatches);
-        int i=1;
-        for(List<StringBuilder> l : batchLists){
-            sdsClient.uploadDataPart(sds.getId(), execution.getId(), i, stringifyList(l));
-            i++;
-        }
-        logger.info("Finished Uploading");
-        //Commit Execution
-        Execution committedExecution = sdsClient.commitExecution(sds.getId(), execution.getId());
-        logger.info("Committed Execution: " + committedExecution);
-    }
+        try{
+            ArrayList<File> csvFiles = loadCSVFiles(TEMP_DIR);
+            File tempFolder = new File(TEMP_DIR);
+            List<File> compressedCsvFiles = toGzipFilesUTF8(csvFiles, tempFolder.getPath() + "/");
+            ExecutorService executorService = Executors.newCachedThreadPool();
+            List<Callable<Object>> uploadTasks = Collections.synchronizedList(new ArrayList<>());
 
+            // For each data part (csv gzip file), create a runnable upload task
+            long partNum = 1;
+            for (File compressedCsvFile : compressedCsvFiles){
+                long myPartNum = partNum;
+                // "uploadDataPart()" accepts csv strings, csv files, and compressed csv files
+                Runnable partUpload = () -> streamClient.uploadDataPart(sds.getId(), execution.getId(), myPartNum, compressedCsvFile);
+                uploadTasks.add(Executors.callable(partUpload));
+                partNum++;
+            }
+            // Asynchronously execute all uploading tasks
+            try {
+                executorService.invokeAll(uploadTasks);
+            }
+            catch (Exception e){
+                logger.error("Error uploading all data parts", e);
+            }
+
+        }catch(Exception e) {
+            logger.error("Exception on uploading!! "+e);
+            System.out.println(e.getMessage());
+            return;
+        }
+        //Commit Execution
+        Execution committedExecution = streamClient.commitExecution(sds.getId(), execution.getId());
+        logger.info("Committed Execution: " + committedExecution);
+        try {
+            FileUtils.deleteDirectory(new File(TEMP_DIR));
+            logger.info("Delete temp directory");
+        }
+        catch (IOException ex){
+            logger.error("Delete temp directory Failed "+ ex);
+        }
+
+    }
     @Override
     public TransactionalPageOutput open(TaskSource taskSource, Schema schema, int taskIndex)
     {
@@ -265,7 +316,6 @@ public class EmbulkOutputDomoOutputPlugin
         final PageReader reader = new PageReader(schema);
         return new DomoPageOutput(reader, client, task, schema);
     }
-
     public class DomoPageOutput
             implements TransactionalPageOutput
     {
@@ -274,33 +324,54 @@ public class EmbulkOutputDomoOutputPlugin
         private final PageReader pageReader;
         private DomoClient client;
         private PluginTask task;
+        private int partPageNum;
 
         private Schema schema;
-        ArrayList<StringBuilder> recordsPage = new ArrayList<StringBuilder>();
+        ArrayList<StringBuilder> recordsPage = null;
+        private char delimiter = ',';
+        private String delimiterString = ",";
+        private String nullString = "";
+        private QuotePolicy quotePolicy = null;
+        private char quote = '"';
+        private char escape =  quote;
+        private String newlineInField;
 
         public DomoPageOutput(final PageReader pageReader,
-                                    DomoClient client, PluginTask task, Schema schema)
+                              DomoClient client, PluginTask task, Schema schema)
         {
-            //logger.info("NEW PAGE CONSTRUCTOR!!");
+            logger.info("NEW PAGE CONSTRUCTOR!!");
             this.pageReader = pageReader;
             this.client = client;
             this.task = task;
             this.schema = schema;
+            this.partPageNum = partNum++;
+            this.recordsPage = new ArrayList<StringBuilder>();
+            try {
+                File directory = new File(TEMP_DIR);
+                if (!directory.exists()) {
+                    directory.mkdir();
+                }
+            }
+            catch(Exception ex){
+                System.out.println(ex.getMessage());
+            }
+            this.partPageNum = partNum++;
+            this.quotePolicy = this.task.getQuotePolicy();
+            this.quote = this.task.getQuoteChar() != '\0' ? this.task.getQuoteChar() : '"';
+            this.escape = this.task.getEscapeChar().or(this.quotePolicy == QuotePolicy.NONE ? '\\' : this.quote);
+            this.newlineInField = this.task.getNewlineInField().getString();
+            this.delimiter = ',';
+            this.delimiterString = ",";
+            this.nullString = "";
         }
 
         @Override
         public void add(Page page)
         {
+            final StringBuilder pageBuilder = new StringBuilder();
             try {
                 pageReader.setPage(page);
-
-                final char delimiter = ',';
-                final String delimiterString = ",";
-                final String nullString = "";
-                final QuotePolicy quotePolicy = this.task.getQuotePolicy();
-                final char quote = this.task.getQuoteChar() != '\0' ? this.task.getQuoteChar() : '"';
-                final char escape = this.task.getEscapeChar().or(quotePolicy == QuotePolicy.NONE ? '\\' : quote);
-                final String newlineInField = this.task.getNewlineInField().getString();
+                logger.info("NEW PAGE!!");
 
                 while (pageReader.nextRecord()) {
                     StringBuilder lineBuilder = new StringBuilder();
@@ -378,14 +449,9 @@ public class EmbulkOutputDomoOutputPlugin
                                 addNullString();
                             }
                         }
-
                     });
-
                     recordsPage.add(lineBuilder);
-                    totalRecords++;
                 }
-
-
             }
             catch (Exception ex) {
                 throw new RuntimeException(ex);
@@ -400,7 +466,15 @@ public class EmbulkOutputDomoOutputPlugin
         @Override
         public void close()
         {
-            allRecords.addAll(recordsPage);
+            try {
+                //save as csv
+                WriteToFile(stringify(recordsPage), RandomStringUtils.randomAlphabetic(10).toString()+".csv");
+            }
+            catch (IOException e){
+                logger.error("Exception on closing page!");
+                logger.error(e.getMessage());
+            }
+
         }
 
         @Override
@@ -415,7 +489,6 @@ public class EmbulkOutputDomoOutputPlugin
         }
 
     }
-
     private String setEscapeAndQuoteValue(String v, char delimiter, QuotePolicy policy, char quote, char escape, String newline, String nullString)
     {
         StringBuilder escapedValue = new StringBuilder();
@@ -462,13 +535,11 @@ public class EmbulkOutputDomoOutputPlugin
             return escapedValue.toString();
         }
     }
-
     private String setQuoteValue(String v, char quote)
     {
 
         return String.valueOf(quote) + v + quote;
     }
-
     private String stringifyList(List<StringBuilder> records){
         StringBuilder sb = new StringBuilder();
         for (StringBuilder s : records)
@@ -483,7 +554,6 @@ public class EmbulkOutputDomoOutputPlugin
         }
         return sb.toString();
     }
-
     private String stringify(ArrayList<StringBuilder> records) {
         StringBuilder sb = new StringBuilder();
         for (StringBuilder s : records)
@@ -513,5 +583,76 @@ public class EmbulkOutputDomoOutputPlugin
         }
 
         return chunks;
+    }
+    public static String readFileAsString(String fileName)throws Exception
+    {
+        String data = "";
+        data = new String(Files.readAllBytes(Paths.get(fileName)));
+        return data;
+    }
+    public static List<File> toGzipFilesUTF8( List<File> sourceFiles, String path){
+        List<File> files = new ArrayList<>();
+        for (File sourceFile : sourceFiles) {
+            String zipFileName = sourceFile.getName().replace(".csv", ".zip");
+            files.add(toGzipFileUTF8(sourceFile, path + zipFileName));
+        }
+        return files;
+    }
+    public static File toGzipFileUTF8( File csvFile, String zipFilePath){
+        File outputFile = new File(zipFilePath);
+        try {
+            GZIPOutputStream gzos = new GZIPOutputStream(new FileOutputStream(outputFile));
+            BufferedReader reader = new BufferedReader(new FileReader(csvFile));
+
+            String currentLine;
+            while ((currentLine = reader.readLine()) != null){
+                currentLine += System.lineSeparator();
+                // Specifying UTF-8 encoding is critical; getBytes() uses ISO-8859-1 by default
+                gzos.write(currentLine.getBytes("UTF-8"));
+            }
+
+            gzos.flush();
+            gzos.finish();
+            gzos.close();
+
+        }
+        catch(IOException e) {
+            logger.error("Error compressing a string to gzip", e);
+        }
+
+        return outputFile;
+    }
+    public static void WriteToFile(String fileContent, String fileName) throws IOException {
+
+        String tempFile = TEMP_DIR + fileName;
+        File file = new File(tempFile);
+        // if file does exists, then delete and create a new file
+        if (file.exists()) {
+            try {
+                File newFileName = new File(TEMP_DIR + "backup_" + fileName);
+                file.renameTo(newFileName);
+                file.createNewFile();
+            } catch (IOException e) {
+                e.printStackTrace();
+            }
+        }
+        FileWriter fw = new FileWriter(file.getAbsoluteFile());
+        BufferedWriter bw = new BufferedWriter(fw);
+        bw.write(fileContent);
+        bw.close();
+    }
+    public static ArrayList<File> loadCSVFiles (String searchFolder) {
+        File folder = new File(searchFolder);
+        File[] listOfFiles = folder.listFiles();
+        ArrayList<File> csvFiles = new ArrayList<File>();
+
+            for (File file : listOfFiles) {
+                if (file.isFile() && file.getName().indexOf(".csv")>0) {
+                    csvFiles.add(file);
+                }
+            }
+
+        System.out.println("All csv files are "+ csvFiles);
+        return csvFiles;
     }
 }
