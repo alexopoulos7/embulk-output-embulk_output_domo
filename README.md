@@ -23,7 +23,7 @@ embulk gem install embulk-output-embulk_output_domo
 - **useHttps**: description (boolean, default: `true`)
 - **streamName**: description (string, required)
 - **column_options**: description (object, default: `Check embulk column options`)
-- **batchSize**: description (integer, default: `1000000`)
+- **batchSize**: description (integer, default: `1000`)
 - **quote**: description (string, default: `"\""`)
 - **quote_policy**: description (string, default: `MINIMAL`)
 - **escape**: description (string, default: `null`)

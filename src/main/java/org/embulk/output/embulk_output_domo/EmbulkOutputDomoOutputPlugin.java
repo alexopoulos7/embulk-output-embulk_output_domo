@@ -87,7 +87,7 @@ public class EmbulkOutputDomoOutputPlugin
     private static ArrayList<StringBuilder> allRecords = new ArrayList<StringBuilder>();
     private static ArrayList<String> recordsParts = new ArrayList<String>();
     private int currentPartCounter = 1;
-    private static int totalBatches = 1;
+    public static int totalBatches = 1;
     private static int pageReaderCount = 0;
     private static String TEMP_DIR = "/tmp/csv/" +RandomStringUtils.randomAlphabetic(10)+"/";
     public static int totalRecordsCounter = 0;
@@ -131,10 +131,6 @@ public class EmbulkOutputDomoOutputPlugin
         @ConfigDefault("true")
         public boolean getUseHttps();
 
-        @Config("updateMethod")
-        @ConfigDefault("REPLACE")
-        public String getUpdateMethod();
-
         @Config("streamName")
         public String getStreamName();
 
@@ -142,8 +138,9 @@ public class EmbulkOutputDomoOutputPlugin
         @ConfigDefault("{}")
         Map<String, TimestampColumnOption> getColumnOptions();
 
+        // Not used we get data in batches from input plugin, so we can configure there
         @Config("batchSize")
-        @ConfigDefault("1000000")
+        @ConfigDefault("1000")
         public int getBatchSize();
 
         @Config("quote")
@@ -162,48 +159,7 @@ public class EmbulkOutputDomoOutputPlugin
         @ConfigDefault("\"LF\"")
         Newline getNewlineInField();
     }
-    public com.domo.sdk.datasets.model.Schema getDomoSchema(Schema schema){
-        /**
-         * We need to return domo Schema
-         * e.g. new com.domo.sdk.datasets.model.Schema(Lists.newArrayList(new Column(STRING, "Friend"), new Column(STRING, "Attending")))
-         */
-        ArrayList<com.domo.sdk.datasets.model.Column> domoSchema =  new ArrayList<com.domo.sdk.datasets.model.Column>();
-        for (int i = 0; i < schema.size(); i++) {
-            Column column = schema.getColumn(i);
-            Type type = column.getType();
-            System.out.println("{\n" +
-                    "      \"type\" : \""+type.getName().toUpperCase()+"\",\n" +
-                    "      \"name\" : \""+column.getName() +"\"\n" +
-                    "    },");
-            switch (type.getName()) {
-                case "long":
-                    domoSchema.add(new com.domo.sdk.datasets.model.Column(ColumnType.LONG, column.getName()));
-                    break;
-                case "double":
-                    domoSchema.add(new com.domo.sdk.datasets.model.Column(ColumnType.DOUBLE, column.getName()));
-                    break;
-                case "boolean":
-                    domoSchema.add(new com.domo.sdk.datasets.model.Column( ColumnType.LONG, column.getName()));
-                    break;
-                case "string":
-                    domoSchema.add(new com.domo.sdk.datasets.model.Column(ColumnType.STRING, column.getName()));
-                    break;
-                case "timestamp":
-                    domoSchema.add(new com.domo.sdk.datasets.model.Column( ColumnType.DATETIME, column.getName()));
-                    break;
-                default:
-                    logger.info("Unsupported type " + type.getName());
-                    break;
-            }
-        }
-        if(domoSchema != null && domoSchema.size()>0){
-            return new com.domo.sdk.datasets.model.Schema(domoSchema);
-        }
-        else{
-            logger.error("Cannot create domo schema");
-            throw new RuntimeException("Cannot create domo Schema");
-        }
-    }
+
 
     @Override
     public ConfigDiff transaction(ConfigSource config,
@@ -217,7 +173,6 @@ public class EmbulkOutputDomoOutputPlugin
         final String clientSecret = task.getClientSecret();
         final String apiHost = task.getApiHost();
         final boolean useHttps = task.getUseHttps();
-        String updateMethod = task.getUpdateMethod();
 
         try {
             if (client == null) {
@@ -243,7 +198,6 @@ public class EmbulkOutputDomoOutputPlugin
                 totalBatches = task.getBatchSize();
                 File directory = new File(TEMP_DIR);
                 if(!directory.exists()) {
-
                     directory.mkdirs();
                 }
             }
@@ -345,17 +299,7 @@ public class EmbulkOutputDomoOutputPlugin
             this.client = client;
             this.task = task;
             this.schema = schema;
-            this.partPageNum = partNum++;
 
-            try {
-                File directory = new File(TEMP_DIR);
-                if (!directory.exists()) {
-                    directory.mkdir();
-                }
-            }
-            catch(Exception ex){
-                System.out.println(ex.getMessage());
-            }
             this.partPageNum = partNum++;
             this.quotePolicy = this.task.getQuotePolicy();
             this.quote = this.task.getQuoteChar() != '\0' ? this.task.getQuoteChar() : '"';
@@ -366,6 +310,10 @@ public class EmbulkOutputDomoOutputPlugin
             this.nullString = "";
         }
 
+        /**
+         * Main Transactional Page that loops
+         * @param page
+         */
         @Override
         public void add(Page page)
         {
@@ -487,8 +435,20 @@ public class EmbulkOutputDomoOutputPlugin
         {
             return Exec.newTaskReport();
         }
-
     }
+    /************************ H E L P E R   M E T H O D S *****************************/
+
+    /**
+     *
+     * @param v String value
+     * @param delimiter csv delimeter
+     * @param policy enum QuotePolicy
+     * @param quote Quote Character
+     * @param escape Escape Character
+     * @param newline NewLine Character
+     * @param nullString Null string
+     * @return String
+     */
     private String setEscapeAndQuoteValue(String v, char delimiter, QuotePolicy policy, char quote, char escape, String newline, String nullString)
     {
         StringBuilder escapedValue = new StringBuilder();
@@ -535,25 +495,41 @@ public class EmbulkOutputDomoOutputPlugin
             return escapedValue.toString();
         }
     }
+
+    /**
+     * Quote a string
+     * @param v
+     * @param quote
+     * @return String
+     */
     private String setQuoteValue(String v, char quote)
     {
-
         return String.valueOf(quote) + v + quote;
     }
-    private String stringifyList(List<StringBuilder> records){
-        StringBuilder sb = new StringBuilder();
-        for (StringBuilder s : records)
-        {
-            if(s!=null) {
-                sb.append(s);
-                sb.append("\n");
-            }
-            else{
-                logger.info("NULL Found!");
+
+    /**
+     * Return a list of all CSV files inside a folder
+     * @param searchFolder String
+     * @return an Arraylist of File Objects
+     */
+    public static ArrayList<File> loadCSVFiles (String searchFolder) {
+        File folder = new File(searchFolder);
+        File[] listOfFiles = folder.listFiles();
+        ArrayList<File> csvFiles = new ArrayList<File>();
+
+        for (File file : listOfFiles) {
+            if (file.isFile() && file.getName().indexOf(".csv")>0) {
+                csvFiles.add(file);
             }
         }
-        return sb.toString();
+        return csvFiles;
     }
+
+    /**
+     * Stringify an ArrayList of StringBuilder to a  String
+     * @param records ArrayList of <StringBuilder>
+     * @return String
+     */
     private String stringify(ArrayList<StringBuilder> records) {
         StringBuilder sb = new StringBuilder();
         for (StringBuilder s : records)
@@ -563,6 +539,14 @@ public class EmbulkOutputDomoOutputPlugin
         }
         return sb.toString();
     }
+
+    /**
+     * Not used currently. It slices a List of a Templated input to chunkSize
+     * @param input List<T>
+     * @param chunkSize Int
+     * @param <T>
+     * @return
+     */
     public static <T> List<List<T>> batches(List<T> input, int chunkSize) {
 
         int inputSize = input.size();
@@ -584,15 +568,15 @@ public class EmbulkOutputDomoOutputPlugin
 
         return chunks;
     }
-    public static String readFileAsString(String fileName)throws Exception
-    {
-        String data = "";
-        data = new String(Files.readAllBytes(Paths.get(fileName)));
-        return data;
-    }
+
+    /**
+     * Create a List of Zip files. Each zip file will contain a batch of csv files
+     * @param sourceFiles A List of Source <Files>
+     * @param path string
+     * @return List<File>
+     */
     public static List<File> toGzipFilesUTF8( List<File> sourceFiles, String path){
         List<File> files = new ArrayList<>();
-        int batchMaxCount = 1000;
         int currentCount = 0;
         int remaining = sourceFiles.size();
         ArrayList<File> batchFiles = new ArrayList<File>();
@@ -600,8 +584,8 @@ public class EmbulkOutputDomoOutputPlugin
         for (File sourceFile : sourceFiles) {
             currentCount++;
             batchFiles.add(sourceFile);
-            if(currentCount>=batchMaxCount || currentCount>=remaining){
-                remaining=remaining-batchMaxCount;
+            if(currentCount>=totalBatches || currentCount>=remaining){
+                remaining=remaining-totalBatches;
                 String zipFileName = sourceFile.getName().replace(".csv", ".zip");
                 files.add(toGzipFileUTF8(batchFiles, path + zipFileName));
                 // System.out.println("Add file "+sourceFile.getName()+"to zip file name = "+zipFileName+". Current count = "+currentCount +" Total records counter = "+totalRecordsCounter);
@@ -613,6 +597,13 @@ public class EmbulkOutputDomoOutputPlugin
         }
         return files;
     }
+
+    /**
+     * Read csv Files as UTF-8, convert to String
+     * @param csvFiles
+     * @param zipFilePath
+     * @return a Zip File
+     */
     public static File toGzipFileUTF8(ArrayList<File> csvFiles, String zipFilePath){
         File outputFile = new File(zipFilePath);
         try {
@@ -639,6 +630,13 @@ public class EmbulkOutputDomoOutputPlugin
 
         return outputFile;
     }
+
+    /**
+     * Writes a CSV File
+     * @param fileContent
+     * @param fileName
+     * @throws IOException
+     */
     public static void WriteToFile(String fileContent, String fileName) throws IOException {
         //logger.info("writing csv file to "+fileName);
 
@@ -660,18 +658,51 @@ public class EmbulkOutputDomoOutputPlugin
         bw.close();
     }
 
-    public static ArrayList<File> loadCSVFiles (String searchFolder) {
-        File folder = new File(searchFolder);
-        File[] listOfFiles = folder.listFiles();
-        ArrayList<File> csvFiles = new ArrayList<File>();
-
-            for (File file : listOfFiles) {
-                if (file.isFile() && file.getName().indexOf(".csv")>0) {
-                    csvFiles.add(file);
-                }
+    /**
+     * Get Domo Schema
+     * @param schema
+     * @return
+     */
+    public com.domo.sdk.datasets.model.Schema getDomoSchema(Schema schema){
+        /**
+         * We need to return domo Schema
+         * e.g. new com.domo.sdk.datasets.model.Schema(Lists.newArrayList(new Column(STRING, "Friend"), new Column(STRING, "Attending")))
+         */
+        ArrayList<com.domo.sdk.datasets.model.Column> domoSchema =  new ArrayList<com.domo.sdk.datasets.model.Column>();
+        for (int i = 0; i < schema.size(); i++) {
+            Column column = schema.getColumn(i);
+            Type type = column.getType();
+            System.out.println("{\n" +
+                    "      \"type\" : \""+type.getName().toUpperCase()+"\",\n" +
+                    "      \"name\" : \""+column.getName() +"\"\n" +
+                    "    },");
+            switch (type.getName()) {
+                case "long":
+                    domoSchema.add(new com.domo.sdk.datasets.model.Column(ColumnType.LONG, column.getName()));
+                    break;
+                case "double":
+                    domoSchema.add(new com.domo.sdk.datasets.model.Column(ColumnType.DOUBLE, column.getName()));
+                    break;
+                case "boolean":
+                    domoSchema.add(new com.domo.sdk.datasets.model.Column( ColumnType.LONG, column.getName()));
+                    break;
+                case "string":
+                    domoSchema.add(new com.domo.sdk.datasets.model.Column(ColumnType.STRING, column.getName()));
+                    break;
+                case "timestamp":
+                    domoSchema.add(new com.domo.sdk.datasets.model.Column( ColumnType.DATETIME, column.getName()));
+                    break;
+                default:
+                    logger.info("Unsupported type " + type.getName());
+                    break;
             }
-
-        //System.out.println("All csv files are "+ csvFiles);
-        return csvFiles;
+        }
+        if(domoSchema != null && domoSchema.size()>0){
+            return new com.domo.sdk.datasets.model.Schema(domoSchema);
+        }
+        else{
+            logger.error("Cannot create domo schema");
+            throw new RuntimeException("Cannot create domo Schema");
+        }
     }
 }
