@@ -17,17 +17,17 @@ embulk gem install embulk-output-embulk_output_domo
 
 ## Configuration
 
-- **clientId**: description (string, required)
-- **clientSecret**: description (string, required)
-- **apiHost**: description (string, default: `"api.domo.com"`)
-- **useHttps**: description (boolean, default: `true`)
-- **streamName**: description (string, required)
-- **column_options**: description (object, default: `Check embulk column options`)
-- **batchSize**: description (integer, default: `1000`)
-- **quote**: description (string, default: `"\""`)
-- **quote_policy**: description (string, default: `MINIMAL`)
-- **escape**: description (string, default: `null`)
-- **newline_in_field**: description (string, default: `LF`)
+- **clientId**: Domo Client Id (string, required)
+- **clientSecret**: Domo Client Secret (string, required)
+- **apiHost**: api host address (string, default: `"api.domo.com"`)
+- **useHttps**: use https? (boolean, default: `true`)
+- **streamName**: name of the Domo Stream (string, required)
+- **column_options**: Embulk Column Options (used mainly for timestamps formatting) (object, default: `Check embulk column options`)
+- **batchSize**: Number of csv files to be zipped and send for each upload request. Each csv has like 50 records. (integer, default: `1000`)
+- **quote**: CSV Quote symbol (See csv embulk plugin for more info) (string, default: `"\""`)
+- **quote_policy**: CSV Quote Policy (string, default: `MINIMAL`)
+- **escape**: CSV Escape Character (string, default: `null`)
+- **newline_in_field**: CSV New Line (string, default: `LF`)
 
 
 ## Example
