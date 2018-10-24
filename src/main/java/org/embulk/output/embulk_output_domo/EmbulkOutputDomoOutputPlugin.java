@@ -194,7 +194,9 @@ public class EmbulkOutputDomoOutputPlugin
                 logger.info("Stream "+ sds);
                 execution = streamClient.createExecution(sds.getId());
                 logger.info("Created Execution: " + execution);
+
                 timestampFormatters = Timestamps.newTimestampColumnFormatters(task, schema, task.getColumnOptions());
+
                 totalBatches = task.getBatchSize();
                 File directory = new File(TEMP_DIR);
                 if(!directory.exists()) {
@@ -227,6 +229,7 @@ public class EmbulkOutputDomoOutputPlugin
             ArrayList<File> csvFiles = loadCSVFiles(TEMP_DIR);
             File tempFolder = new File(TEMP_DIR);
             List<File> compressedCsvFiles = toGzipFilesUTF8(csvFiles, tempFolder.getPath() + "/");
+
             ExecutorService executorService = Executors.newCachedThreadPool();
             List<Callable<Object>> uploadTasks = Collections.synchronizedList(new ArrayList<>());
 
@@ -345,7 +348,7 @@ public class EmbulkOutputDomoOutputPlugin
                         public void doubleColumn(Column column) {
                             addDelimiter(column);
                             if (!pageReader.isNull(column)) {
-                                addValue(Long.toString(pageReader.getLong(column)));
+                                addValue(Double.toString(pageReader.getDouble(column)));
                             } else {
                                 addNullString();
                             }
