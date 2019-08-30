@@ -160,7 +160,6 @@ public class EmbulkOutputDomoOutputPlugin
         Newline getNewlineInField();
     }
 
-
     @Override
     public ConfigDiff transaction(ConfigSource config,
                                   Schema schema, int taskCount,
@@ -176,7 +175,7 @@ public class EmbulkOutputDomoOutputPlugin
 
         try {
             if (client == null) {
-                //getDomoSchema(schema);
+                com.domo.sdk.datasets.model.Schema ds_schema = getDomoSchema(schema);
                 com.domo.sdk.request.Config domoConfig = com.domo.sdk.request.Config.with()
                         .clientId(clientId)
                         .clientSecret(clientSecret)
@@ -188,20 +187,36 @@ public class EmbulkOutputDomoOutputPlugin
 
                 client = DomoClient.create(domoConfig);
                 streamClient = client.streamClient();
-
+                logger.info("Lets search for dataSource.name = "+task.getStreamName());
                 List<Stream> searchedSds = streamClient.search("dataSource.name:" + task.getStreamName());
-                sds = searchedSds.get(0);
-                logger.info("Stream "+ sds);
-                execution = streamClient.createExecution(sds.getId());
-                logger.info("Created Execution: " + execution);
-
-                timestampFormatters = Timestamps.newTimestampColumnFormatters(task, schema, task.getColumnOptions());
-
-                totalBatches = task.getBatchSize();
-                File directory = new File(TEMP_DIR);
-                if(!directory.exists()) {
-                    directory.mkdirs();
+                logger.info("Found search sds size = "+searchedSds.size());
+                if (searchedSds.size() >0) {
+                    sds = searchedSds.get(0);
                 }
+                else{
+                    logger.info("Lets create new Stream");
+                    CreateDataSetRequest ds = new CreateDataSetRequest();
+                    ds.setName(task.getStreamName());
+                    ds.setDescription(task.getStreamName());
+                    ds.setSchema(ds_schema);
+
+                    logger.info("We have to create sds");
+                    StreamRequest sdsRequest = new StreamRequest();
+
+                    sdsRequest.setDataSet(ds);
+                    sdsRequest.setUpdateMethod(UpdateMethod.REPLACE);
+
+                    sds = streamClient.create(sdsRequest);
+                }
+                    logger.info("Stream "+ sds);
+                    execution = streamClient.createExecution(sds.getId());
+                    logger.info("Created Execution: " + execution);
+                    timestampFormatters = Timestamps.newTimestampColumnFormatters(task, schema, task.getColumnOptions());
+                    totalBatches = task.getBatchSize();
+                    File directory = new File(TEMP_DIR);
+                    if(!directory.exists()) {
+                        directory.mkdirs();
+                    }
             }
         }
         catch(Exception ex){
@@ -213,6 +228,7 @@ public class EmbulkOutputDomoOutputPlugin
         control.run(task.dump());
         return Exec.newConfigDiff();
     }
+
     @Override
     public ConfigDiff resume(TaskSource taskSource,
                              Schema schema, int taskCount,
@@ -220,6 +236,7 @@ public class EmbulkOutputDomoOutputPlugin
     {
         throw new UnsupportedOperationException("embulk_output_domo output plugin does not support resuming");
     }
+
     @Override
     public void cleanup(TaskSource taskSource,
                         Schema schema, int taskCount,
@@ -229,7 +246,6 @@ public class EmbulkOutputDomoOutputPlugin
             ArrayList<File> csvFiles = loadCSVFiles(TEMP_DIR);
             File tempFolder = new File(TEMP_DIR);
             List<File> compressedCsvFiles = toGzipFilesUTF8(csvFiles, tempFolder.getPath() + "/");
-
             ExecutorService executorService = Executors.newCachedThreadPool();
             List<Callable<Object>> uploadTasks = Collections.synchronizedList(new ArrayList<>());
 
@@ -241,7 +257,7 @@ public class EmbulkOutputDomoOutputPlugin
                 Runnable partUpload = () -> streamClient.uploadDataPart(sds.getId(), execution.getId(), myPartNum, compressedCsvFile);
                 uploadTasks.add(Executors.callable(partUpload));
                 partNum++;
-             }
+            }
             // Asynchronously execute all uploading tasks
             try {
                 executorService.invokeAll(uploadTasks);
@@ -297,7 +313,7 @@ public class EmbulkOutputDomoOutputPlugin
         public DomoPageOutput(final PageReader pageReader,
                               DomoClient client, PluginTask task, Schema schema)
         {
-            logger.info("NEW PAGE CONSTRUCTOR!!");
+            logger.info("NEW PAGE CONSTRUCTOR!!!");
             this.pageReader = pageReader;
             this.client = client;
             this.task = task;
@@ -384,6 +400,7 @@ public class EmbulkOutputDomoOutputPlugin
                         @Override
                         public void booleanColumn(Column column) {
                             addDelimiter(column);
+                            //logger.info(pageReader.getBoolean(column));
                             if (!pageReader.isNull(column)) {
                                 addValue(Boolean.toString(pageReader.getBoolean(column)));
                             } else {
@@ -444,7 +461,7 @@ public class EmbulkOutputDomoOutputPlugin
     /**
      *
      * @param v String value
-     * @param delimiter csv delimeter
+     * @param delimiter csv delimiter
      * @param policy enum QuotePolicy
      * @param quote Quote Character
      * @param escape Escape Character
@@ -660,12 +677,6 @@ public class EmbulkOutputDomoOutputPlugin
         bw.write(fileContent);
         bw.close();
     }
-
-    /**
-     * Get Domo Schema
-     * @param schema
-     * @return
-     */
     public com.domo.sdk.datasets.model.Schema getDomoSchema(Schema schema){
         /**
          * We need to return domo Schema
@@ -675,15 +686,16 @@ public class EmbulkOutputDomoOutputPlugin
         for (int i = 0; i < schema.size(); i++) {
             Column column = schema.getColumn(i);
             Type type = column.getType();
-            System.out.println("{\n" +
-                    "      \"type\" : \""+type.getName().toUpperCase()+"\",\n" +
-                    "      \"name\" : \""+column.getName() +"\"\n" +
-                    "    },");
+            //            System.out.println("{\n" +
+            //                    "      \"type\" : \""+type.getName().toUpperCase()+"\",\n" +
+            //                    "      \"name\" : \""+column.getName() +"\"\n" +
+            //                    "    },");
             switch (type.getName()) {
                 case "long":
                     domoSchema.add(new com.domo.sdk.datasets.model.Column(ColumnType.LONG, column.getName()));
                     break;
                 case "double":
+                    //	     System.out.println("Double Column" + column.getName());
                     domoSchema.add(new com.domo.sdk.datasets.model.Column(ColumnType.DOUBLE, column.getName()));
                     break;
                 case "boolean":
@@ -700,7 +712,7 @@ public class EmbulkOutputDomoOutputPlugin
                     break;
             }
         }
-        if(domoSchema != null && domoSchema.size()>0){
+        if(domoSchema.size() > 0){
             return new com.domo.sdk.datasets.model.Schema(domoSchema);
         }
         else{
@@ -708,4 +720,5 @@ public class EmbulkOutputDomoOutputPlugin
             throw new RuntimeException("Cannot create domo Schema");
         }
     }
+
 }
