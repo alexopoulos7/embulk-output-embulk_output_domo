@@ -192,6 +192,7 @@ public class EmbulkOutputDomoOutputPlugin
                 logger.info("Found search sds size = "+searchedSds.size());
                 if (searchedSds.size() >0) {
                     sds = searchedSds.get(0);
+
                     for(Stream sd : searchedSds){
                         logger.info("Compare "+sd.getDataset().getName() + " == " + task.getStreamName() +" = " +Boolean.toString(sd.getDataset().getName().equals(task.getStreamName().trim())));
 
@@ -218,6 +219,7 @@ public class EmbulkOutputDomoOutputPlugin
 
                     sds = streamClient.create(sdsRequest);
                 }
+
                     logger.info("Stream "+ sds);
                     execution = streamClient.createExecution(sds.getId());
                     logger.info("Created Execution: " + execution);
