@@ -60,13 +60,9 @@ import java.io.BufferedWriter;
 import java.io.BufferedReader;
 import java.io.FileOutputStream;
 
-import java.nio.file.Files;
-import java.nio.file.Paths;
 import java.util.concurrent.Callable;
-import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
-import java.util.concurrent.Future;
 import java.util.zip.GZIPOutputStream;
 import java.util.Collections;
 import org.apache.commons.lang3.RandomStringUtils;
@@ -191,7 +187,7 @@ public class EmbulkOutputDomoOutputPlugin
                 List<Stream> searchedSds = streamClient.search("dataSource.name:" + task.getStreamName());
                 logger.info("Found search sds size = "+searchedSds.size());
                 if (searchedSds.size() >0) {
-                    sds = searchedSds.get(0);
+                    // sds = searchedSds.get(0);
 
                     for(Stream sd : searchedSds){
                         logger.info("Compare "+sd.getDataset().getName() + " == " + task.getStreamName() +" = " +Boolean.toString(sd.getDataset().getName().equals(task.getStreamName().trim())));
@@ -203,21 +199,12 @@ public class EmbulkOutputDomoOutputPlugin
                             break;
                         }
                     }
+                    if (sds == null){
+                        createNewStream(task.getStreamName(), ds_schema);
+                    }
                 }
                 else{
-                    logger.info("Lets create new Stream");
-                    CreateDataSetRequest ds = new CreateDataSetRequest();
-                    ds.setName(task.getStreamName());
-                    ds.setDescription(task.getStreamName());
-                    ds.setSchema(ds_schema);
-
-                    logger.info("We have to create sds");
-                    StreamRequest sdsRequest = new StreamRequest();
-
-                    sdsRequest.setDataSet(ds);
-                    sdsRequest.setUpdateMethod(UpdateMethod.REPLACE);
-
-                    sds = streamClient.create(sdsRequest);
+                    createNewStream(task.getStreamName(), ds_schema);
                 }
 
                     logger.info("Stream "+ sds);
@@ -239,6 +226,23 @@ public class EmbulkOutputDomoOutputPlugin
         // non-retryable (non-idempotent) output:
         control.run(task.dump());
         return Exec.newConfigDiff();
+    }
+
+    private Stream createNewStream(String streamName, com.domo.sdk.datasets.model.Schema ds_schema) {
+        logger.info("Lets create new Stream with name = "+ streamName);
+        CreateDataSetRequest ds = new CreateDataSetRequest();
+        ds.setName(streamName);
+        ds.setDescription(streamName);
+        ds.setSchema(ds_schema);
+
+        logger.info("We have to create sds");
+        StreamRequest sdsRequest = new StreamRequest();
+
+        sdsRequest.setDataSet(ds);
+        sdsRequest.setUpdateMethod(UpdateMethod.REPLACE);
+
+        sds = streamClient.create(sdsRequest);
+        return sds;
     }
 
     @Override
